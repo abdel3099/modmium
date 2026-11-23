@@ -1,0 +1,70 @@
+name: Build Modmium Recovery Images
+
+on:
+  workflow_dispatch:
+    inputs:
+      boards:
+        description: 'Comma-separated boards (e.g. corsola, brya) or "all"'
+        required: true
+        default: 'all'
+      version:
+        description: 'ChromeOS milestone (e.g. 138)'
+        required: true
+      publish_release:
+        description: 'Publish to GitHub Releases?'
+        type: boolean
+        default: false
+
+jobs:
+  select-boards:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set.outputs.matrix }}
+    steps:
+      - id: set
+        run: |
+          if [[ "${{ inputs.boards }}" == "all" ]]; then
+            echo 'matrix=["ambassador","arkham","asuka","asurada","atlas","auron-paine","auron-yuna","banjo","banon","bob","brask","brox","brya","buddy","buddy-cfm","butterfly","candy","caroline","cave","celes","chell","cherry","clapper","constitution","coral","corsola","cyan","daisy","daisy-skate","daisy-spring","dedede","drallion","edgar","elm","endeavour","enguarde","eve","excelsior","expresso","falco","falco-li","fizz","fizz-cfm","gale","gandof","geralt","glimmer","gnawty","grunt","guado","guado-cfm","guybrush","hana","hatch","heli","jacuzzi","jedi","kalista","kalista-cfm","kefka","kevin","kip","kukui","lars","leon","link","lulu","lumpy","mccloud","monroe","nami","nautilus","ninja","nirva","nissa","nissa2","noctis","nocturne","nyan-big","nyan-blaze","nyan-kitty","octopus","orco","ovis","panther","parrot","parrot-ivb","peach-pi","peach-pit","peppy","puff","pyro","quawks","rammus","rauru","reef","reks","relm","reven","rex","rikku","rikku-cfm","samus","sand","sarien","scarlet","sentry","setzer","skyrim","skywalker","snappy","soraka","squawks","staryu","stout","strongbad","stumpy","sumo","swanky","terra","tidus","tricky","trogdor","ultima","veyron-fievel","veyron-jaq","veyron-jerry","veyron-mickey","veyron-mighty","veyron-minnie","veyron-speedy","veyron-tiger","volteer","whirlwind","winky","wizpig","wolf","x86-alex","x86-alex-he","x86-mario","x86-zgb","x86-zgb-he","zako","zork"]' >> "$GITHUB_OUTPUT"
+          else
+            echo "matrix=$(echo "${{ inputs.boards }}" | tr ',' '\n' | xargs | tr ' ' '\n' | jq -R . | jq -sc .)" >> "$GITHUB_OUTPUT"
+          fi
+
+  build-images:
+    name: Build (${{ matrix.board }})
+    needs: select-boards
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        board: ${{ fromJSON(needs.select-boards.outputs.matrix) }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y acpica-tools coreutils curl jq libarchive-tools pv sed util-linux wget inkscape
+          sudo ./tools/install-deps.sh --bootstrap-vboot || true
+
+      - name: Build image
+        run: |
+          sudo ./build-image.sh -b ${{ matrix.board }} -v ${{ inputs.version }} || exit 0
+          [ -f modmium.bin ] && mv modmium.bin modmium-${{ matrix.board }}.bin
+
+      - name: Save artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: modmium-${{ matrix.board }}-v${{ inputs.version }}
+          path: modmium-${{ matrix.board }}.bin
+          if-no-files-found: ignore
+
+      - name: Publish release
+        if: hashFiles('modmium-*.bin') != '' && inputs.publish_release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ inputs.version }}
+          files: modmium-*.bin
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
